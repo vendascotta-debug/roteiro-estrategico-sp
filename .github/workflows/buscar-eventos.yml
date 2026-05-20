@@ -1,0 +1,65 @@
+name: Buscar Eventos SP Automaticamente
+
+on:
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  buscar-eventos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Buscar eventos e publicar no Firebase
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
+        run: |
+          python3 << 'PYEOF'
+import urllib.request, json, os, re
+from datetime import datetime, timezone, timedelta
+
+KEY = os.environ['CLAUDE_API_KEY']
+FB = os.environ['FIREBASE_URL']
+br = timezone(timedelta(hours=-3))
+hoje = datetime.now(br)
+data = hoje.strftime('%Y-%m-%d')
+data_br = hoje.strftime('%d/%m/%Y')
+dias = ['Segunda','Terca','Quarta','Quinta','Sexta','Sabado','Domingo']
+dia = dias[hoje.weekday()]
+print(f"Buscando: {dia} {data_br}")
+
+prompt = f"Pesquise eventos em Sao Paulo HOJE {data_br}. Inclua: feiras (APAS, Hospitalar, BFSHOW, Anhembi, SP Expo), futebol (Corinthians, Palmeiras, Sao Paulo, Santos - verifique datas em ge.globo.com), shows, teatro, parques, virada cultural se for 23-25/05. Responda APENAS JSON sem markdown: {{\"eventos\":[{{\"nome\":\"Nome\",\"venue\":\"Local\",\"endereco\":\"Endereco SP\",\"horario\":\"09:00 - 18:00\",\"saida\":\"Saida 18:00 - 19:00\",\"publico\":\"10000\",\"crowd\":2,\"categoria\":\"feira\",\"emoji\":\"💼\",\"gps\":\"https://maps.google.com/?q=Local+SP\"}}]}}"
+
+body = json.dumps({"model":"claude-sonnet-4-5","max_tokens":6000,"tools":[{"type":"web_search_20250305","name":"web_search"}],"messages":[{"role":"user","content":prompt}]}).encode()
+req = urllib.request.Request('https://api.anthropic.com/v1/messages',data=body,headers={'Content-Type':'application/json','x-api-key':KEY,'anthropic-version':'2023-06-01'})
+
+with urllib.request.urlopen(req,timeout=180) as r:
+    resp = json.loads(r.read())
+
+texto = ''.join(b.get('text','') for b in resp.get('content',[]) if b.get('type')=='text')
+print(f"Resposta: {texto[:300]}")
+
+eventos = []
+t = texto.replace('```json','').replace('```','').strip()
+try:
+    eventos = json.loads(t).get('eventos',[])
+except:
+    m = re.search(r'\{.*?"eventos".*?\}',t,re.DOTALL)
+    if m:
+        try: eventos = json.loads(m.group()).get('eventos',[])
+        except: pass
+
+print(f"Eventos: {len(eventos)}")
+for e in eventos:
+    print(f"  - {e.get('nome')} | {e.get('venue')} | {e.get('horario')}")
+
+if not eventos:
+    print("Nenhum evento encontrado")
+    exit(0)
+
+fb_data = {f'ev{i}':{**e,'data':data,'ativo':True} for i,e in enumerate(eventos)}
+fb_body = json.dumps(fb_data,ensure_ascii=False).encode()
+fb_req = urllib.request.Request(f"{FB}/eventos/{data}.json",data=fb_body,method='PUT',headers={'Content-Type':'application/json'})
+with urllib.request.urlopen(fb_req,timeout=30): pass
+print(f"Firebase OK: {len(fb_data)} eventos para {data}")
+PYEOF
