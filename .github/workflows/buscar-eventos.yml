@@ -1,0 +1,144 @@
+name: Buscar Eventos SP Automaticamente
+
+on:
+  schedule:
+    # Roda todo dia às 10h horário de Brasília (13h UTC)
+    - cron: '0 13 * * *'
+  workflow_dispatch: # Permite rodar manualmente
+
+jobs:
+  buscar-eventos:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Buscar eventos e publicar no Firebase
+        run: |
+          cat << 'PYEOF' > buscar.py
+          import urllib.request
+          import urllib.error
+          import json
+          import os
+          from datetime import datetime, timezone, timedelta
+
+          CLAUDE_KEY = os.environ['CLAUDE_API_KEY']
+          FIREBASE_URL = os.environ['FIREBASE_URL']
+
+          # Data de hoje no horário de Brasília
+          br_tz = timezone(timedelta(hours=-3))
+          hoje = datetime.now(br_tz)
+          data_hoje = hoje.strftime('%Y-%m-%d')
+          data_br = hoje.strftime('%d/%m/%Y')
+          dia_semana = ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'][hoje.weekday()]
+
+          print(f"Buscando eventos para: {dia_semana}, {data_br}")
+
+          # Chama Claude API com web search
+          prompt = f"""Pesquise na internet os principais eventos acontecendo HOJE {dia_semana} {data_br} em São Paulo - SP, Brasil.
+
+          Foque em:
+          - APAS Show (Expo Center Norte) se estiver acontecendo hoje
+          - Hospitalar (São Paulo Expo) se estiver acontecendo hoje  
+          - FEIMEC, BFSHOW, ENIC e outras feiras no Anhembi/Expo
+          - Jogos de futebol: Corinthians, Palmeiras, São Paulo, Santos - APENAS SE FOR HOJE
+          - Shows e concertos grandes
+          - Congressos e convenções com mais de 1.000 pessoas
+          
+          IMPORTANTE: Verifique as datas! Só inclua eventos que acontecem HOJE {data_br}.
+
+          Responda APENAS com JSON puro sem markdown:
+          {{"eventos":[{{"nome":"Nome","venue":"Local","endereco":"Endereço completo SP","horario":"09:00 - 20:00","saida":"Saída 20:00 - 21:00","publico":"95000","crowd":3,"categoria":"feira","emoji":"💼","gps":"https://maps.google.com/?q=Local+SP"}}]}}
+          
+          crowd: 1=até 5k, 2=5k-20k, 3=acima de 20k"""
+
+          payload = json.dumps({
+              "model": "claude-sonnet-4-5",
+              "max_tokens": 4000,
+              "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+              "messages": [{"role": "user", "content": prompt}]
+          }).encode('utf-8')
+
+          req = urllib.request.Request(
+              'https://api.anthropic.com/v1/messages',
+              data=payload,
+              headers={
+                  'Content-Type': 'application/json',
+                  'x-api-key': CLAUDE_KEY,
+                  'anthropic-version': '2023-06-01'
+              }
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=120) as resp:
+                  data = json.loads(resp.read())
+          except urllib.error.HTTPError as e:
+              print(f"Erro HTTP: {e.code} - {e.read()}")
+              exit(1)
+
+          # Extrai texto da resposta
+          texto = ''
+          for block in data.get('content', []):
+              if block.get('type') == 'text':
+                  texto += block.get('text', '')
+
+          print(f"Resposta IA: {texto[:500]}")
+
+          # Parse JSON
+          eventos = []
+          texto_limpo = texto.replace('```json','').replace('```','').strip()
+          
+          try:
+              parsed = json.loads(texto_limpo)
+              eventos = parsed.get('eventos', parsed if isinstance(parsed, list) else [])
+          except:
+              import re
+              match = re.search(r'\{.*"eventos".*\}', texto_limpo, re.DOTALL)
+              if match:
+                  try:
+                      eventos = json.loads(match.group()).get('eventos', [])
+                  except:
+                      pass
+
+          if not eventos:
+              print("Nenhum evento encontrado!")
+              exit(0)
+
+          print(f"Encontrados {len(eventos)} eventos!")
+
+          # Publica no Firebase
+          firebase_data = {}
+          for i, ev in enumerate(eventos):
+              firebase_data[f'ev{i}'] = {
+                  'nome': ev.get('nome', ''),
+                  'venue': ev.get('venue', ''),
+                  'endereco': ev.get('endereco', ''),
+                  'horario': ev.get('horario', ''),
+                  'saida': ev.get('saida', ''),
+                  'publico': str(ev.get('publico', '—')),
+                  'crowd': int(ev.get('crowd', 2)),
+                  'categoria': ev.get('categoria', 'outro'),
+                  'emoji': ev.get('emoji', '📍'),
+                  'gps': ev.get('gps', ''),
+                  'data': data_hoje,
+                  'ativo': True
+              }
+
+          fb_url = f"{FIREBASE_URL}/eventos/{data_hoje}.json"
+          fb_payload = json.dumps(firebase_data, ensure_ascii=False).encode('utf-8')
+          
+          fb_req = urllib.request.Request(
+              fb_url,
+              data=fb_payload,
+              method='PUT',
+              headers={'Content-Type': 'application/json'}
+          )
+
+          with urllib.request.urlopen(fb_req, timeout=30) as resp:
+              result = resp.read()
+              print(f"Firebase OK: {len(firebase_data)} eventos publicados!")
+              print(f"URL: {fb_url}")
+
+          PYEOF
+          python3 buscar.py
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
