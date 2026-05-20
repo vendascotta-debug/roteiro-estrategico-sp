@@ -32,27 +32,50 @@ jobs:
 
           print(f"Buscando eventos para: {dia_semana}, {data_br}")
 
-          # Chama Claude API com web search
-          prompt = f"""Pesquise na internet os principais eventos acontecendo HOJE {dia_semana} {data_br} em São Paulo - SP, Brasil.
+          prompt = f"""Você é um especialista em eventos de São Paulo para motoristas de aplicativo. 
+Hoje é {dia_semana}, {data_br}.
 
-          Foque em:
-          - APAS Show (Expo Center Norte) se estiver acontecendo hoje
-          - Hospitalar (São Paulo Expo) se estiver acontecendo hoje  
-          - FEIMEC, BFSHOW, ENIC e outras feiras no Anhembi/Expo
-          - Jogos de futebol: Corinthians, Palmeiras, São Paulo, Santos - APENAS SE FOR HOJE
-          - Shows e concertos grandes
-          - Congressos e convenções com mais de 1.000 pessoas
-          
-          IMPORTANTE: Verifique as datas! Só inclua eventos que acontecem HOJE {data_br}.
+Pesquise na internet os eventos acontecendo HOJE em São Paulo usando múltiplas buscas:
 
-          Responda APENAS com JSON puro sem markdown:
-          {{"eventos":[{{"nome":"Nome","venue":"Local","endereco":"Endereço completo SP","horario":"09:00 - 20:00","saida":"Saída 20:00 - 21:00","publico":"95000","crowd":3,"categoria":"feira","emoji":"💼","gps":"https://maps.google.com/?q=Local+SP"}}]}}
-          
-          crowd: 1=até 5k, 2=5k-20k, 3=acima de 20k"""
+1. FEIRAS E EXPOSIÇÕES: Busque feiras no Anhembi, Expo Center Norte, São Paulo Expo, Imigrantes, Transamerica Expo. Ex: APAS Show, Hospitalar, FEIMEC, BFSHOW, ENIC, etc.
+
+2. FUTEBOL: Busque jogos de hoje no ge.globo.com, espn.com.br ou google. Inclua Corinthians (Neo Química Arena), Palmeiras (Allianz Parque), São Paulo (MorumBIS), Santos (Vila Belmiro) e times do interior.
+
+3. SHOWS E MÚSICA: Busque shows em cartaz hoje em São Paulo - Allianz Parque, Espaço das Américas, Audio, Blue Note, Tom Brasil, Vibra São Paulo, Arena Anhembi, etc.
+
+4. TEATRO E MUSICAIS: Busque peças e musicais em cartaz hoje - Teatro Renault, Teatro Bradesco, FAAP, SESC, etc.
+
+5. EVENTOS NOS PARQUES: Busque eventos em Ibirapuera, Villa-Lobos, Trianon, Estadual Alberto Löfgren, etc.
+
+6. VIRADA CULTURAL: Se hoje for entre 23-25/05/2026, inclua programação da Virada Cultural SP.
+
+7. CINEMA: Estreias de filmes importantes na semana.
+
+8. BALADAS E BARES: Eventos noturnos importantes - Vila Madalena, Itaim, Pinheiros, República.
+
+9. EVENTOS ESPECIAIS: Maratonas, feiras gastronômicas, festivais, eventos na Paulista.
+
+10. AEROPORTOS E TERMINAIS: Fluxo esperado em GRU, Congonhas e Rodoviária do Tietê.
+
+REGRAS IMPORTANTES:
+- Só inclua eventos que acontecem HOJE {data_br}
+- Para futebol, verifique o horário e local CORRETO
+- Inclua o máximo de eventos possível
+- Para eventos noturnos (shows, baladas), coloque horário de saída estimado
+
+Responda APENAS com JSON puro, sem markdown, sem explicações:
+{{"eventos":[
+  {{"nome":"Nome do Evento","venue":"Nome do Local","endereco":"Endereço completo, Bairro, São Paulo - SP","horario":"HH:MM - HH:MM","saida":"Saída HH:MM - HH:MM","publico":"50000","crowd":3,"categoria":"feira","emoji":"💼","gps":"https://maps.google.com/?q=Local+Sao+Paulo"}},
+  {{"nome":"Palmeiras x Cerro Porteño","venue":"Allianz Parque","endereco":"Av. Francisco Matarazzo, 1705, Água Branca, São Paulo - SP","horario":"21:30 - 23:30","saida":"Saída 23:30 - 01:00","publico":"43000","crowd":3,"categoria":"futebol","emoji":"⚽","gps":"https://maps.google.com/?q=Allianz+Parque+Sao+Paulo"}}
+]}}
+
+Valores para crowd: 1=até 5mil pessoas, 2=5mil a 20mil, 3=acima de 20mil
+Valores para categoria: feira, futebol, show, teatro, parque, cinema, balada, outro
+Valores para emoji: ⚽=futebol, 🎵=show/música, 🎭=teatro/musical, 💼=feira/negócios, 🛒=varejo, 🏥=saúde, 🎪=festival/parque, 🍺=bar/balada, 🎬=cinema, ✈️=aeroporto, 🚌=rodoviária"""
 
           payload = json.dumps({
               "model": "claude-sonnet-4-5",
-              "max_tokens": 4000,
+              "max_tokens": 8000,
               "tools": [{"type": "web_search_20250305", "name": "web_search"}],
               "messages": [{"role": "user", "content": prompt}]
           }).encode('utf-8')
@@ -68,7 +91,7 @@ jobs:
           )
 
           try:
-              with urllib.request.urlopen(req, timeout=120) as resp:
+              with urllib.request.urlopen(req, timeout=180) as resp:
                   data = json.loads(resp.read())
           except urllib.error.HTTPError as e:
               print(f"Erro HTTP: {e.code} - {e.read()}")
@@ -80,7 +103,7 @@ jobs:
               if block.get('type') == 'text':
                   texto += block.get('text', '')
 
-          print(f"Resposta IA: {texto[:500]}")
+          print(f"Resposta IA (primeiros 800 chars): {texto[:800]}")
 
           # Parse JSON
           eventos = []
@@ -91,18 +114,27 @@ jobs:
               eventos = parsed.get('eventos', parsed if isinstance(parsed, list) else [])
           except:
               import re
-              match = re.search(r'\{.*"eventos".*\}', texto_limpo, re.DOTALL)
+              match = re.search(r'\{.*?"eventos".*?\}', texto_limpo, re.DOTALL)
               if match:
                   try:
                       eventos = json.loads(match.group()).get('eventos', [])
                   except:
                       pass
+              if not eventos:
+                  arr_match = re.search(r'\[.*?\]', texto_limpo, re.DOTALL)
+                  if arr_match:
+                      try:
+                          eventos = json.loads(arr_match.group())
+                      except:
+                          pass
 
           if not eventos:
               print("Nenhum evento encontrado!")
               exit(0)
 
-          print(f"Encontrados {len(eventos)} eventos!")
+          print(f"Total de eventos encontrados: {len(eventos)}")
+          for ev in eventos:
+              print(f"  - {ev.get('nome','?')} | {ev.get('venue','?')} | {ev.get('horario','?')}")
 
           # Publica no Firebase
           firebase_data = {}
@@ -133,9 +165,7 @@ jobs:
           )
 
           with urllib.request.urlopen(fb_req, timeout=30) as resp:
-              result = resp.read()
-              print(f"Firebase OK: {len(firebase_data)} eventos publicados!")
-              print(f"URL: {fb_url}")
+              print(f"✅ Firebase OK: {len(firebase_data)} eventos publicados para {data_hoje}!")
 
           PYEOF
           python3 buscar.py
